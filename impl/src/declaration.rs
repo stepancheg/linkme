@@ -3,8 +3,8 @@ use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use syn::parse::{Parse, ParseStream, Result};
 use syn::{
-    bracketed, Attribute, Error, GenericArgument, Ident, Lifetime, PathArguments, Token, Type,
-    Visibility,
+    bracketed, Attribute, Error, Expr, ExprLit, GenericArgument, Ident, Lifetime, Lit,
+    PathArguments, Token, Type, TypeArray, TypeSlice, Visibility,
 };
 
 struct Declaration {
@@ -29,12 +29,63 @@ impl Parse for Declaration {
         let ident: Ident = input.parse()?;
         input.parse::<Token![:]>()?;
         let ty: Type = input.parse()?;
+        let (ty, zero_len_specified) = match ty {
+            Type::Array(TypeArray {
+                elem,
+                len,
+                bracket_token,
+                semi_token: _,
+            }) => {
+                match &len {
+                    Expr::Lit(ExprLit {
+                        attrs,
+                        lit: Lit::Int(lit),
+                    }) => {
+                        if !attrs.is_empty() {
+                            return Err(Error::new_spanned(
+                                len,
+                                "attributes are not supported here",
+                            ));
+                        }
+                        if lit.base10_parse::<u32>()? != 0 {
+                            return Err(Error::new_spanned(
+                                len,
+                                "only literal zero is allowed here",
+                            ));
+                        }
+                    }
+                    _ => {
+                        return Err(Error::new_spanned(len, "only literal zero is allowed here"));
+                    }
+                }
+                let ty = Type::Slice(TypeSlice {
+                    bracket_token,
+                    elem,
+                });
+                (ty, true)
+            }
+            ty => {
+                // Here we only expect type like `[T]` but we don't validate it.
+                (ty, false)
+            }
+        };
 
-        let eq_token: Option<Token![=]> = input.parse()?;
-        if eq_token.is_some() {
-            let content;
-            bracketed!(content in input);
-            content.parse::<Token![..]>()?;
+        if zero_len_specified {
+            // When Rust-compatible syntax is used, we expect correct RHS, e.g.
+            // ```
+            // #[distributed_slice]
+            // static SLICE: [u32; 0] = [];
+            // ```
+            input.parse::<Token![=]>()?;
+            let _content;
+            bracketed!(_content in input);
+        } else {
+            let eq_token: Option<Token![=]> = input.parse()?;
+            if eq_token.is_some() {
+                let content;
+                bracketed!(content in input);
+                content.parse::<Token![..]>()?;
+            }
         }
 
         input.parse::<Token![;]>()?;
